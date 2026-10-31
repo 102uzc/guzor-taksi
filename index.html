@@ -44,7 +44,7 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
   }
   #toast {
-    position: absolute; left: 12px; right: 12px; top: 12px; z-index: 1002;
+    position: absolute; left: 12px; right: 12px; top: 70px; z-index: 1002;
     padding: 10px 14px; border-radius: 12px; font-size: 14px;
     background: rgba(17, 24, 39, .92); color: #fff; text-align: center;
   }
@@ -72,6 +72,31 @@
   .btn:active { transform: scale(.98); }
   .btn.ghost { flex: 0 0 auto; padding: 0 18px; background: var(--sec); color: var(--fg); }
 
+  #search { position: absolute; left: 12px; right: 12px; top: 12px; z-index: 1004; }
+  .sbox {
+    display: flex; background: var(--bg); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .3);
+  }
+  #q {
+    flex: 1; min-width: 0; height: 48px; padding: 0 14px;
+    border: none; outline: none; background: transparent;
+    color: var(--fg); font-size: 16px;
+  }
+  #go {
+    width: 54px; border: none; background: var(--brand);
+    color: #111827; font-size: 20px;
+  }
+  #results {
+    margin-top: 6px; background: var(--bg); border-radius: 14px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .3);
+    max-height: 46vh; overflow-y: auto;
+  }
+  .res { padding: 10px 14px; border-bottom: 1px solid var(--sec); }
+  .res:last-child { border-bottom: none; }
+  .res b { display: block; font-size: 15px; }
+  .res span { display: block; font-size: 12px; color: var(--hint); margin-top: 2px; }
+  .res.empty { color: var(--hint); font-size: 14px; }
+
   .leaflet-container { font: inherit; }
   .leaflet-tooltip { font-weight: 700; }
 </style>
@@ -88,6 +113,14 @@
     </div>
     <button id="loc" type="button" aria-label="Mening joyim">&#127919;</button>
     <div id="toast" hidden></div>
+    <div id="search">
+      <div class="sbox">
+        <input id="q" type="search" placeholder="Manzil yoki joy nomini qidiring"
+               autocomplete="off" enterkeyhint="search">
+        <button id="go" type="button" aria-label="Qidirish">&#128269;</button>
+      </div>
+      <div id="results" hidden></div>
+    </div>
   </div>
 
   <div id="sheet">
@@ -261,6 +294,104 @@
     }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
   }
   el("loc").onclick = function () { locate(false); };
+
+  // Manzil nomi bo'yicha qidirish (OpenStreetMap Nominatim).
+  // Siyosat: qidiruv faqat tugma yoki Enter bosilganda ishlaydi,
+  // so'rovlar orasida kamida 1.2 soniya, natijalar keshlanadi.
+  var searching = false;
+  var lastSearch = 0;
+  var cache = {};
+
+  function hideResults() { el("results").hidden = true; }
+
+  function showMsg(text) {
+    var box = el("results");
+    box.innerHTML = "";
+    var d = document.createElement("div");
+    d.className = "res empty";
+    d.textContent = text;
+    box.appendChild(d);
+    box.hidden = false;
+  }
+
+  function pick(item) {
+    hideResults();
+    el("q").blur();
+    map.setView([parseFloat(item.lat), parseFloat(item.lon)], 17);
+    toast("Pin joyga qo'yildi. Kerak bo'lsa, xaritani suring.");
+  }
+
+  function showResults(list) {
+    var box = el("results");
+    box.innerHTML = "";
+    list.forEach(function (it) {
+      var parts = String(it.display_name || "").split(",");
+      var d = document.createElement("div");
+      d.className = "res";
+      var b = document.createElement("b");
+      b.textContent = it.name || parts[0] || "Joy";
+      var sp = document.createElement("span");
+      sp.textContent = parts.slice(1, 4).join(",").trim();
+      d.appendChild(b);
+      d.appendChild(sp);
+      d.onclick = function () { pick(it); };
+      box.appendChild(d);
+    });
+    box.hidden = false;
+  }
+
+  function search() {
+    var text = el("q").value.trim();
+    if (text.length < 2) {
+      toast("Kamida 2 ta harf yozing.");
+      return;
+    }
+    var key = text.toLowerCase();
+    if (cache[key]) {
+      if (cache[key].length) { showResults(cache[key]); }
+      else { showMsg("Hech narsa topilmadi. Boshqacha yozib ko'ring."); }
+      return;
+    }
+    if (searching || Date.now() - lastSearch < 1200) {
+      toast("Biroz kuting va qayta bosing.");
+      return;
+    }
+    searching = true;
+    lastSearch = Date.now();
+    showMsg("Qidirilmoqda...");
+    var url = "https://nominatim.openstreetmap.org/search" +
+      "?format=jsonv2&limit=6&dedupe=1&countrycodes=uz" +
+      "&accept-language=uz,ru,en" +
+      "&viewbox=65.6,39.2,66.9,38.0&bounded=0" +
+      "&q=" + encodeURIComponent(text);
+    fetch(url)
+      .then(function (r) {
+        if (!r.ok) { throw new Error("http"); }
+        return r.json();
+      })
+      .then(function (list) {
+        searching = false;
+        cache[key] = list;
+        if (!list.length) {
+          showMsg("Hech narsa topilmadi. Boshqacha yozib ko'ring.");
+          return;
+        }
+        showResults(list);
+      })
+      .catch(function () {
+        searching = false;
+        showMsg("Qidirib bo'lmadi. Internetni tekshiring yoki xaritadan tanlang.");
+      });
+  }
+
+  el("go").onclick = search;
+  el("q").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      search();
+    }
+  });
+  map.on("dragstart", hideResults);
 
   map.on("movestart", function () { el("pin").classList.add("lift"); });
   map.on("moveend", function () { el("pin").classList.remove("lift"); });
