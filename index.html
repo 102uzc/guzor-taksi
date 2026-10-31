@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>G'uzor Taksi</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --fg: var(--tg-theme-text-color, #111827);
+    --hint: var(--tg-theme-hint-color, #6b7280);
+    --sec: var(--tg-theme-secondary-bg-color, #f3f4f6);
+    --brand: #ffc107;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  #mapwrap { position: relative; flex: 1; min-height: 0; }
+  #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--sec); }
+
+  #pin {
+    position: absolute; left: 50%; top: 50%;
+    width: 38px; height: 52px; margin-left: -19px; margin-top: -52px;
+    z-index: 1000; pointer-events: none; color: #16a34a;
+    filter: drop-shadow(0 3px 3px rgba(0, 0, 0, .35));
+    transition: transform .15s ease;
+  }
+  #pin.dest { color: #ef4444; }
+  #pin.lift { transform: translateY(-10px); }
+  #pin svg { display: block; }
+
+  #loc {
+    position: absolute; right: 12px; bottom: 28px; z-index: 1001;
+    width: 46px; height: 46px; border-radius: 50%; border: none;
+    background: var(--bg); color: var(--fg); font-size: 22px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+  }
+  #toast {
+    position: absolute; left: 12px; right: 12px; top: 12px; z-index: 1002;
+    padding: 10px 14px; border-radius: 12px; font-size: 14px;
+    background: rgba(17, 24, 39, .92); color: #fff; text-align: center;
+  }
+
+  #sheet {
+    position: relative; z-index: 1003; margin-top: -16px;
+    background: var(--bg); border-radius: 18px 18px 0 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, .18);
+  }
+  #title { font-size: 20px; font-weight: 800; margin: 0 0 4px; }
+  #sub { font-size: 14px; color: var(--hint); margin: 0 0 14px; }
+
+  .stats { display: flex; gap: 10px; margin-bottom: 8px; }
+  .stat { flex: 1; background: var(--sec); border-radius: 14px; padding: 10px 12px; }
+  .lbl { display: block; font-size: 12px; color: var(--hint); margin-bottom: 2px; }
+  .stat b { font-size: 18px; }
+  .note { font-size: 12px; color: var(--hint); margin-bottom: 12px; }
+
+  .row { display: flex; gap: 10px; }
+  .btn {
+    flex: 1; height: 52px; border: none; border-radius: 14px;
+    font-size: 16px; font-weight: 700; background: var(--brand); color: #111827;
+  }
+  .btn:active { transform: scale(.98); }
+  .btn.ghost { flex: 0 0 auto; padding: 0 18px; background: var(--sec); color: var(--fg); }
+
+  .leaflet-container { font: inherit; }
+  .leaflet-tooltip { font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div id="pin">
+      <svg viewBox="0 0 24 34" width="38" height="52" fill="currentColor" aria-hidden="true">
+        <path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 22 12 22s12-13 12-22C24 5.4 18.6 0 12 0z"/>
+        <circle cx="12" cy="12" r="5" fill="#ffffff"/>
+      </svg>
+    </div>
+    <button id="loc" type="button" aria-label="Mening joyim">&#127919;</button>
+    <div id="toast" hidden></div>
+  </div>
+
+  <div id="sheet">
+    <p id="title">Qayerdan ketasiz?</p>
+    <p id="sub">Xaritani suring: pin kerakli joyda tursin.</p>
+
+    <div id="info" hidden>
+      <div class="stats">
+        <div class="stat"><span class="lbl">Masofa</span><b id="km">-</b></div>
+        <div class="stat"><span class="lbl">Taxminiy narx</span><b id="sum">-</b></div>
+      </div>
+      <div class="note">Yakuniy narxni safar davomida taksometr hisoblaydi.</div>
+    </div>
+
+    <div class="row">
+      <button id="back" class="btn ghost" type="button" hidden>&#8617;&#65039; Orqaga</button>
+      <button id="ok" class="btn" type="button">&#128205; Shu yerdan</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Narx sozlamalari. Bot ham shu raqamlar bilan hisoblaydi
+  // (bot.py ichidagi KM_NARXI va BOSHLANGICH bilan bir xil bo'lsin).
+  var KM_NARXI = 1500;
+  var BOSHLANGICH = 0;
+  var YOL = 1.3; // to'g'ri chiziqdan yo'l masofasiga taxminiy koeffitsient
+
+  var tg = window.Telegram ? window.Telegram.WebApp : null;
+  if (tg) {
+    try { tg.ready(); tg.expand(); } catch (e) {}
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  var FALLBACK = [38.6211, 66.2487]; // G'uzor markazi (taxminiy)
+  var map = L.map("map", { zoomControl: false }).setView(FALLBACK, 15);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap"
+  }).addTo(map);
+
+  var step = 0; // 0: qayerdan, 1: qayerga, 2: tasdiqlash
+  var A = null, B = null, mA = null, mB = null, line = null;
+  var toastTimer = null;
+
+  function fmt(n) {
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  }
+  function rad(x) { return x * Math.PI / 180; }
+  function dist(a, b) {
+    var dLat = rad(b.lat - a.lat);
+    var dLng = rad(b.lng - a.lng);
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * 6371 * Math.asin(Math.sqrt(h)) * YOL;
+  }
+  function narx(km) {
+    var x = BOSHLANGICH + km * KM_NARXI;
+    return Math.max(BOSHLANGICH, Math.round(x / 500) * 500);
+  }
+
+  function toast(text) {
+    var t = el("toast");
+    t.textContent = text;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.hidden = true; }, 3500);
+  }
+
+  function marker(latlng, color, label) {
+    return L.circleMarker(latlng, {
+      radius: 9, color: "#ffffff", weight: 3,
+      fillColor: color, fillOpacity: 1
+    }).addTo(map).bindTooltip(label, { permanent: true, direction: "top" });
+  }
+  function drop(layer) { if (layer) { map.removeLayer(layer); } }
+
+  function render() {
+    var pin = el("pin");
+    pin.style.display = step === 2 ? "none" : "block";
+    pin.classList.toggle("dest", step === 1);
+    el("back").hidden = step === 0;
+    el("info").hidden = step !== 2;
+    if (step === 0) {
+      el("title").textContent = "Qayerdan ketasiz?";
+      el("sub").textContent = "Xaritani suring: pin kerakli joyda tursin.";
+      el("ok").innerHTML = "&#128205; Shu yerdan";
+    } else if (step === 1) {
+      el("title").textContent = "Qayerga borasiz?";
+      el("sub").textContent = "Xaritani suring: pin borish joyida tursin.";
+      el("ok").innerHTML = "&#127937; Shu yerga";
+    } else {
+      el("title").textContent = "Buyurtmani tasdiqlang";
+      el("sub").textContent = "Yashil nuqta: qayerdan. Qizil nuqta: qayerga.";
+      el("ok").innerHTML = "&#9989; Buyurtma berish";
+    }
+  }
+
+  function send() {
+    var data = JSON.stringify({
+      a: [+A.lat.toFixed(6), +A.lng.toFixed(6)],
+      b: [+B.lat.toFixed(6), +B.lng.toFixed(6)]
+    });
+    if (!tg) {
+      toast("Ilovani Telegram ichidan oching.");
+      return;
+    }
+    try {
+      tg.sendData(data);
+    } catch (e) {
+      toast("Yuborib bo'lmadi. Botdagi xarita tugmasi orqali oching.");
+    }
+  }
+
+  el("ok").onclick = function () {
+    if (step === 0) {
+      A = map.getCenter();
+      mA = marker(A, "#16a34a", "Qayerdan");
+      step = 1;
+    } else if (step === 1) {
+      B = map.getCenter();
+      var km = dist(A, B);
+      if (km < 0.1) {
+        toast("Manzillar juda yaqin. Borish joyini boshqa joyga qo'ying.");
+        return;
+      }
+      mB = marker(B, "#ef4444", "Qayerga");
+      line = L.polyline([A, B], {
+        color: "#f59e0b", weight: 4, dashArray: "8 8"
+      }).addTo(map);
+      map.fitBounds(L.latLngBounds([A, B]), { padding: [60, 60] });
+      el("km").textContent = km.toFixed(1) + " km";
+      el("sum").textContent = fmt(narx(km)) + " so'm";
+      step = 2;
+    } else {
+      send();
+      return;
+    }
+    render();
+  };
+
+  el("back").onclick = function () {
+    if (step === 2) {
+      drop(mB); drop(line); mB = null; line = null;
+      map.setView(B, Math.max(map.getZoom(), 15));
+      step = 1;
+    } else if (step === 1) {
+      drop(mA); mA = null;
+      map.setView(A, Math.max(map.getZoom(), 15));
+      step = 0;
+    }
+    render();
+  };
+
+  function locate(first) {
+    if (!navigator.geolocation) {
+      if (!first) { toast("Joylashuvni aniqlab bo'lmadi."); }
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(function (p) {
+      map.setView([p.coords.latitude, p.coords.longitude], 17);
+    }, function () {
+      toast(first
+        ? "Joylashuv aniqlanmadi. Xaritani suring."
+        : "Joylashuvga ruxsat bering.");
+    }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+  }
+  el("loc").onclick = function () { locate(false); };
+
+  map.on("movestart", function () { el("pin").classList.add("lift"); });
+  map.on("moveend", function () { el("pin").classList.remove("lift"); });
+
+  if (tg && tg.onEvent) {
+    tg.onEvent("viewportChanged", function () { map.invalidateSize(); });
+  }
+  window.addEventListener("load", function () { map.invalidateSize(); });
+
+  render();
+  locate(true);
+})();
+</script>
+</body>
+</html>
